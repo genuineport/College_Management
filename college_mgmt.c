@@ -9,8 +9,10 @@
 #define NAME_LENGTH 60
 #define GENDER_LENGTH 20
 #define COURSE_LENGTH 60
-#define DATA_FILE "students.dat"
+#define DATA_FILE_NAME "college_students.dat"
+#define LEGACY_DATA_FILE "students.dat"
 #define LINE_LENGTH 512
+#define DATA_FILE_PATH_LENGTH 1024
 
 typedef struct {
     int id;
@@ -24,6 +26,50 @@ typedef struct {
 
 static Student students[MAX_STUDENTS];
 static int student_count = 0;
+static char data_file_path[DATA_FILE_PATH_LENGTH];
+
+static int initialize_data_file_path(void)
+{
+    const char *override = getenv("STUDENT_DATA_FILE");
+    const char *directory;
+    int length;
+
+    if (override != NULL && override[0] != '\0') {
+        length = snprintf(data_file_path, sizeof(data_file_path), "%s", override);
+        if (length < 0 || (size_t)length >= sizeof(data_file_path)) {
+            fprintf(stderr, "STUDENT_DATA_FILE path is too long.\n");
+            return 0;
+        }
+        return 1;
+    }
+
+#ifdef _WIN32
+    directory = getenv("LOCALAPPDATA");
+    if (directory == NULL || directory[0] == '\0') {
+        directory = getenv("USERPROFILE");
+    }
+    if (directory == NULL || directory[0] == '\0') {
+        fprintf(stderr, "Could not find a writable user directory. Set STUDENT_DATA_FILE to a writable file path.\n");
+        return 0;
+    }
+    length = snprintf(data_file_path, sizeof(data_file_path), "%s\\%s",
+                      directory, DATA_FILE_NAME);
+#else
+    directory = getenv("HOME");
+    if (directory == NULL || directory[0] == '\0') {
+        fprintf(stderr, "Could not find a writable user directory. Set STUDENT_DATA_FILE to a writable file path.\n");
+        return 0;
+    }
+    length = snprintf(data_file_path, sizeof(data_file_path), "%s/%s",
+                      directory, DATA_FILE_NAME);
+#endif
+
+    if (length < 0 || (size_t)length >= sizeof(data_file_path)) {
+        fprintf(stderr, "Student data file path is too long.\n");
+        return 0;
+    }
+    return 1;
+}
 
 static void trim(char *text)
 {
@@ -163,11 +209,13 @@ static int find_student_index(int id)
 
 static int save_students(void)
 {
-    FILE *file = fopen(DATA_FILE, "w");
+    FILE *file = fopen(data_file_path, "w");
     int i;
 
     if (file == NULL) {
-        perror("Could not open student data file for saving");
+        fprintf(stderr, "Could not open student data file '%s' for saving: ",
+                data_file_path);
+        perror(NULL);
         return 0;
     }
 
@@ -192,16 +240,30 @@ static int save_students(void)
 
 static int load_students(void)
 {
-    FILE *file = fopen(DATA_FILE, "r");
+    FILE *file = fopen(data_file_path, "r");
+    const char *loaded_from = data_file_path;
     char line[LINE_LENGTH];
     int line_number = 0;
 
     if (file == NULL) {
         if (errno == ENOENT) {
-            return 1;
+            file = fopen(LEGACY_DATA_FILE, "r");
+            if (file == NULL) {
+                if (errno == ENOENT) {
+                    return 1;
+                }
+                fprintf(stderr, "Could not open legacy student data file '%s': ",
+                        LEGACY_DATA_FILE);
+                perror(NULL);
+                return 0;
+            }
+            loaded_from = LEGACY_DATA_FILE;
+        } else {
+            fprintf(stderr, "Could not open student data file '%s': ",
+                    data_file_path);
+            perror(NULL);
+            return 0;
         }
-        perror("Could not open student data file");
-        return 0;
     }
 
     while (fgets(line, sizeof(line), file) != NULL) {
@@ -241,6 +303,15 @@ static int load_students(void)
         return 0;
     }
     fclose(file);
+
+    if (strcmp(loaded_from, data_file_path) != 0) {
+        printf("Migrating records from '%s' to the user data folder.\n",
+               LEGACY_DATA_FILE);
+        if (!save_students()) {
+            fprintf(stderr, "Could not migrate existing student records.\n");
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -464,11 +535,14 @@ int main(void)
 {
     int choice;
 
-    if (!load_students()) {
-        fprintf(stderr, "Could not safely load records. Fix %s before continuing.\n",
-                DATA_FILE);
+    if (!initialize_data_file_path()) {
         return EXIT_FAILURE;
     }
+    if (!load_students()) {
+        fprintf(stderr, "Could not safely load records. Check the data file path and permissions.\n");
+        return EXIT_FAILURE;
+    }
+    printf("Student data file: %s\n", data_file_path);
     printf("Loaded %d student record(s).\n", student_count);
 
     for (;;) {
